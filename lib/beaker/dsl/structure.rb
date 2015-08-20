@@ -124,6 +124,64 @@ module Beaker
                  "Additional info: '#{explanation}'")
       end
 
+      FIXED_ISSUE_STATUSES = ["READY FOR TEST", "READY FOR REVIEW", "RESOLVED", "CLOSED"]
+
+      def known_issue(id)
+        @logger.notify "Checking status of KnownIssue #{id})"
+        uri = URI.parse("https://tickets.puppetlabs.com/rest/api/2/issue/#{id}?fields=summary,status")
+
+        2.downto(0) do |x|
+          begin
+            Net::HTTP.start(uri.host, uri.port,
+                            :use_ssl => uri.scheme == 'https') do |http|
+              request = Net::HTTP::Get.new uri
+              request['Content-Type'] = "application/json"
+              request['Authorization'] = "Basic c2FtLndvb2RzOlN1Y2hhc3dlZXR5MQ=="
+
+              response = http.request request
+              # If issue can't be found, log a warning and continue test case execution
+              if response.code != "200"
+                @logger.warn "The specified known_issue #{id} could not be found in Jira."
+                break
+              end
+
+              parsed_response = JSON.parse(response.body)
+
+              # Verify that the response is for the correct issue and not a "closest match".
+              if parsed_response["key"].to_s.downcase != id.downcase
+                @logger.warn "The specified known_issue #{id} could not be found in Jira."
+                break
+              end
+
+              # Determine if ticket is marked as fixed or not
+              status = parsed_response["fields"]["status"]["name"]
+
+              fixed = false
+
+              FIXED_ISSUE_STATUSES.each do |fixed_status|
+                fixed = true if fixed_status == status
+              end
+
+              # If status of issue is fixed, log a warning with a reminder to remove known_issue and execute test.end
+              if fixed
+                @logger.warn "Issue #{id} - #{parsed_response["fields"]["summary"]} is fixed!  " +
+                                 "Remove the known_issue from the automation, and update automated test if it is still failing."
+                break
+              else
+                # If status of issue is not fixed, log a warning and skip test
+                @logger.warn "Issue #{id} - #{parsed_response["fields"]["summary"]} is NOT fixed.  Skipping test."
+                skip_test 'Blocking known issue #{id} has not been fixed.'
+              end
+
+              break
+            end
+          rescue StandardError => ex
+            @logger.warn "Unable to determine status of defect #{id}.  Exception: #{ex}. Retrying #{x} times"
+            sleep 5
+          end
+        end
+      end
+
       # Limit the hosts a test case is run against
       # @note This will modify the {Beaker::TestCase#hosts} member
       #   in place unless an array of hosts is passed into it and
